@@ -1,0 +1,48 @@
+name: HubSpot to Sheets Daily Sync
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 11 * * *'
+
+concurrency:
+  group: hubspot-to-sheets-daily
+  cancel-in-progress: true
+
+jobs:
+  run-sync:
+    runs-on: ubuntu-latest
+
+    env:
+      HUBSPOT_ACCESS_TOKEN: ${{ secrets.HUBSPOT_ACCESS_TOKEN }}
+      GOOGLE_SERVICE_ACCOUNT_FILE: ${{ github.workspace }}/hubspot-to-sheets/service_account.json
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+        with:
+          path: hubspot-to-sheets
+
+      - name: DEBUG SHOW WORKSPACE
+        run: |
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+          pwd
+          ls -la
+          ls -la "$GITHUB_WORKSPACE/hubspot-to-sheets"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r "$GITHUB_WORKSPACE/hubspot-to-sheets/requirements.txt"
+
+      - name: Rebuild service account file
+        run: |
+          cat <<'EOF' > "$GITHUB_WORKSPACE/hubspot-to-sheets/service_account.json"
+          ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          EOF
+
+      - name: Run SA360 offline conversion upload
+        run: python "$GITHUB_WORKSPACE/hubspot-to-sheets/hubspot_sa360_dry_run.py"
