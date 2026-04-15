@@ -3,7 +3,7 @@ name: HubSpot to SA360 Offline Upload
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 8,15 * * *'
+    - cron: '0 05 * * *'
 
 concurrency:
   group: hubspot-to-sa360-daily
@@ -37,3 +37,17 @@ jobs:
 
       - name: Run SA360 offline conversion upload
         run: python hubspot_sa360_dry_run.py
+
+      - name: Commit updated upload log
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add uploaded_conversions.json
+
+          if git diff --cached --quiet; then
+            echo "No upload log changes to commit"
+          else
+            git commit -m "Update uploaded conversions log"
+            git push
+          fi
