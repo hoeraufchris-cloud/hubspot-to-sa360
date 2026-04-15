@@ -169,6 +169,12 @@ def upload_qualified_lead(service, click_id, conversion_time, conversion_id):
         return True
 
     except Exception as e:
+        error_str = str(e)
+
+        if "conversion ID is already specified" in error_str:
+            print(f"\nAlready uploaded (safe to skip): {conversion_id}")
+            return True
+
         print(f"\nQL upload failed for {conversion_id}: {e}")
         return False
 
@@ -178,11 +184,11 @@ def upload_closed_won(service, click_id, conversion_time, conversion_id, revenue
             {
                 "clickId": click_id,
                 "conversionId": conversion_id,
-                "conversionTimestamp": conversion_time,  # epoch millis (int)
+                "conversionTimestamp": conversion_time,
                 "segmentationType": "FLOODLIGHT",
                 "segmentationId": CLOSED_WON_FLOODLIGHT_ID,
                 "type": "TRANSACTION",
-                "revenueMicros": str(int(float(revenue) * 1_000_000)),
+                "revenueMicros": str(int(round(float(revenue) * 1_000_000))),
                 "currencyCode": "USD"
             }
         ]
@@ -196,6 +202,12 @@ def upload_closed_won(service, click_id, conversion_time, conversion_id, revenue
         return True
 
     except Exception as e:
+        error_str = str(e)
+
+        if "conversion ID is already specified" in error_str:
+            print(f"\nAlready uploaded (safe to skip): {conversion_id}")
+            return True
+
         print(f"\nClosed Won upload failed for {conversion_id}: {e}")
         return False
 
