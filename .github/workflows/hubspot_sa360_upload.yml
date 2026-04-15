@@ -3,7 +3,7 @@ name: HubSpot to SA360 Offline Upload
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 11 * * *'
+    - cron: '0 8 * * *'
 
 concurrency:
   group: hubspot-to-sa360-daily
