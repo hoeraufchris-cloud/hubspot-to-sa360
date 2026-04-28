@@ -1,7 +1,7 @@
 import os
 import json
-import datetime
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import requests
 from googleapiclient.discovery import build
@@ -24,7 +24,60 @@ ENGINE_ACCOUNT_ID = "9620336649"
 QUALIFIED_LEAD_FLOODLIGHT_ID = "14378257"
 CLOSED_WON_FLOODLIGHT_ID = "14543866"
 UPLOAD_LOG_FILE = "uploaded_conversions.json"
+QL_BUCKET_CONFIG = {
+    "0-999": {
+        "floodlight_id": "459056676",
+        "value": 0,
+    },
+    "1000-2999": {
+        "floodlight_id": "453893976",
+        "value": 500,
+    },
+    "3000-9999": {
+        "floodlight_id": "453834455",
+        "value": 1500,
+    },
+    "10000-19999": {
+        "floodlight_id": "457317732",
+        "value": 3000,
+    },
+    "20000-49999": {
+        "floodlight_id": "457699012",
+        "value": 6000,
+    },
+    "50000+": {
+        "floodlight_id": "453891876",
+        "value": 10000,
+    },
+}
 
+
+def get_ql_bucket_config(props):
+    raw_bucket = props.get("actual_amount_bucket") or props.get("budget_bucket")
+
+    bucket_normalization = {
+        "below_1000": "0-999",
+        "below-1000": "0-999",
+        "0-999": "0-999",
+        "1000-2999": "1000-2999",
+        "3000-9999": "3000-9999",
+        "10000-19999": "10000-19999",
+        "20000-49999": "20000-49999",
+        "50000+": "50000+",
+    }
+
+    if not raw_bucket:
+        print("No QL bucket found. Defaulting to 0-999.")
+        bucket = "0-999"
+    else:
+        raw_bucket = str(raw_bucket).strip()
+        bucket = bucket_normalization.get(raw_bucket)
+
+        if not bucket:
+            print(f"Unrecognized QL bucket '{raw_bucket}'. Defaulting to 0-999.")
+            bucket = "0-999"
+
+    return bucket, QL_BUCKET_CONFIG[bucket]
 
 def load_upload_log():
     if not os.path.exists(UPLOAD_LOG_FILE):
@@ -41,6 +94,7 @@ def save_upload_log(upload_log):
     with open(UPLOAD_LOG_FILE, "w") as f:
         json.dump(upload_log, f, indent=2)
 
+
 def get_sa360_service():
     service_account_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "service_account.json")
 
@@ -56,19 +110,22 @@ def get_sa360_service():
 def get_first_deals():
     url = f"{BASE_URL}/crm/v3/objects/deals/search"
 
-    yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
+    local_tz = ZoneInfo("America/Chicago")
+    yesterday = datetime.now(local_tz).date() - timedelta(days=1)
 
     start = int(
         datetime.combine(
             yesterday,
-            datetime.min.time()
+            datetime.min.time(),
+            tzinfo=local_tz
         ).timestamp() * 1000
     )
 
     end = int(
         datetime.combine(
             yesterday,
-            datetime.max.time()
+            datetime.max.time(),
+            tzinfo=local_tz
         ).timestamp() * 1000
     )
 
@@ -77,19 +134,9 @@ def get_first_deals():
             {
                 "filters": [
                     {
-                        "propertyName": "order_sequence",
-                        "operator": "LT",
-                        "value": "2"
-                    },
-                    {
-                        "propertyName": "createdate",
-                        "operator": "GTE",
-                        "value": str(start)
-                    },
-                    {
-                        "propertyName": "createdate",
-                        "operator": "LTE",
-                        "value": str(end)
+                        "propertyName": "hs_object_id",
+                        "operator": "EQ",
+                        "value": "59151489811"
                     }
                 ]
             }
@@ -98,7 +145,10 @@ def get_first_deals():
             "createdate",
             "closedate",
             "hs_closed_amount",
-            "dealstage"
+            "dealstage",
+            "actual_amount_bucket",
+            "budget_bucket",
+            "paid_ad_bid_strategy"
         ],
         "limit": 100
     }
@@ -144,8 +194,7 @@ def get_contact_for_deal(deal_id):
                 print(f"Skipping deal {deal_id} after repeated HubSpot lookup failures.")
                 return None
 
-
-def upload_qualified_lead(service, click_id, conversion_time, conversion_id):
+def upload_qualified_lead(service, click_id, conversion_time, conversion_id, floodlight_id, ql_value):
     body = {
         "conversion": [
             {
@@ -153,9 +202,9 @@ def upload_qualified_lead(service, click_id, conversion_time, conversion_id):
                 "conversionId": conversion_id,
                 "conversionTimestamp": conversion_time,
                 "segmentationType": "FLOODLIGHT",
-                "segmentationId": QUALIFIED_LEAD_FLOODLIGHT_ID,
+                "segmentationId": floodlight_id,
                 "type": "TRANSACTION",
-                "revenueMicros": "0",
+                "revenueMicros": str(int(float(ql_value) * 1_000_000)),
                 "currencyCode": "USD"
             }
         ]
@@ -177,6 +226,7 @@ def upload_qualified_lead(service, click_id, conversion_time, conversion_id):
 
         print(f"\nQL upload failed for {conversion_id}: {e}")
         return False
+
 
 def upload_closed_won(service, click_id, conversion_time, conversion_id, revenue):
     body = {
@@ -211,6 +261,7 @@ def upload_closed_won(service, click_id, conversion_time, conversion_id, revenue
         print(f"\nClosed Won upload failed for {conversion_id}: {e}")
         return False
 
+
 def run(service):
     deals = get_first_deals()
     upload_log = load_upload_log()
@@ -228,25 +279,31 @@ def run(service):
 
         contact = get_contact_for_deal(deal_id)
         if not contact:
+            print(f"Skipping QL (no associated contact): {deal_id}")
             continue
 
         gclid = contact["properties"].get("hs_google_click_id")
         if not gclid:
+            print(f"Skipping QL (no GCLID): {deal_id} | Contact: {contact['properties'].get('email')}")
             continue
 
         conversion_time_str = props.get("createdate")
         conversion_time = int(
-           datetime.fromisoformat(
+            datetime.fromisoformat(
                 conversion_time_str.replace("Z", "+00:00")
             ).timestamp() * 1000
         )
 
+        test_floodlight_id = "453893976"   # $1K-$3K bucket
+        test_value = 500
+
         sa360_row = {
             "clickId": gclid,
-            "conversionName": "Qualified Lead",
+            "conversionName": "Qualified Lead - TEST bucket floodlight",
             "conversionTime": conversion_time,
-            "conversionValue": 100,
-            "conversionId": f"hubspot-deal-{deal_id}-ql"
+            "conversionValue": test_value,
+            "floodlightId": test_floodlight_id,
+            "conversionId": f"hubspot-deal-{deal_id}-ql-test"
         }
 
         print("QL SA360 PAYLOAD:")
@@ -256,7 +313,9 @@ def run(service):
             service=service,
             click_id=gclid,
             conversion_time=conversion_time,
-            conversion_id=f"hubspot-deal-{deal_id}-ql"
+            conversion_id=f"hubspot-deal-{deal_id}-ql-test",
+            floodlight_id=test_floodlight_id,
+            ql_value=test_value
         )
 
         if success:
@@ -271,17 +330,21 @@ def run(service):
         if deal_id in upload_log["closed_won"]:
             print(f"Skipping Closed Won (already uploaded): {deal_id}")
             continue
+
         props = deal["properties"]
 
         if props.get("dealstage") != "closedwon":
+            print(f"Skipping Closed Won (not closedwon): {deal_id} | Stage: {props.get('dealstage')}")
             continue
 
-        contact = get_contact_for_deal(deal["id"])
+        contact = get_contact_for_deal(deal_id)
         if not contact:
+            print(f"Skipping Closed Won (no associated contact): {deal_id}")
             continue
 
         gclid = contact["properties"].get("hs_google_click_id")
         if not gclid:
+            print(f"Skipping Closed Won (no GCLID): {deal_id} | Contact: {contact['properties'].get('email')}")
             continue
 
         conversion_time_str = props.get("closedate")
