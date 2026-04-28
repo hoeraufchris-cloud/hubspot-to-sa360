@@ -134,9 +134,23 @@ def get_first_deals():
             {
                 "filters": [
                     {
-                        "propertyName": "hs_object_id",
-                        "operator": "EQ",
-                        "value": "59151489811"
+                        "propertyName": "order_sequence",
+                        "operator": "LT",
+                        "value": "2"
+                    },
+                    {
+                        "propertyName": "paid_ad_bid_strategy",
+                        "operator": "HAS_PROPERTY"
+                    },
+                    {
+                        "propertyName": "createdate",
+                        "operator": "GTE",
+                        "value": str(start)
+                    },
+                    {
+                        "propertyName": "createdate",
+                        "operator": "LTE",
+                        "value": str(end)
                     }
                 ]
             }
@@ -194,7 +208,7 @@ def get_contact_for_deal(deal_id):
                 print(f"Skipping deal {deal_id} after repeated HubSpot lookup failures.")
                 return None
 
-def upload_qualified_lead(service, click_id, conversion_time, conversion_id, floodlight_id, ql_value):
+def upload_qualified_lead(service, click_id, conversion_time, conversion_id, floodlight_id):
     body = {
         "conversion": [
             {
@@ -203,9 +217,7 @@ def upload_qualified_lead(service, click_id, conversion_time, conversion_id, flo
                 "conversionTimestamp": conversion_time,
                 "segmentationType": "FLOODLIGHT",
                 "segmentationId": floodlight_id,
-                "type": "TRANSACTION",
-                "revenueMicros": str(int(float(ql_value) * 1_000_000)),
-                "currencyCode": "USD"
+                "type": "ACTION"
             }
         ]
     }
@@ -218,12 +230,6 @@ def upload_qualified_lead(service, click_id, conversion_time, conversion_id, flo
         return True
 
     except Exception as e:
-        error_str = str(e)
-
-        if "conversion ID is already specified" in error_str:
-            print(f"\nAlready uploaded (safe to skip): {conversion_id}")
-            return True
-
         print(f"\nQL upload failed for {conversion_id}: {e}")
         return False
 
@@ -294,16 +300,15 @@ def run(service):
             ).timestamp() * 1000
         )
 
-        test_floodlight_id = "453893976"   # $1K-$3K bucket
-        test_value = 500
+        ql_bucket, ql_bucket_config = get_ql_bucket_config(props)
 
         sa360_row = {
             "clickId": gclid,
-            "conversionName": "Qualified Lead - TEST bucket floodlight",
+            "conversionName": f"Qualified Lead - {ql_bucket}",
             "conversionTime": conversion_time,
-            "conversionValue": test_value,
-            "floodlightId": test_floodlight_id,
-            "conversionId": f"hubspot-deal-{deal_id}-ql-test"
+            "conversionValue": ql_bucket_config["value"],
+            "floodlightId": ql_bucket_config["floodlight_id"],
+            "conversionId": f"hubspot-deal-{deal_id}-ql"
         }
 
         print("QL SA360 PAYLOAD:")
@@ -313,9 +318,8 @@ def run(service):
             service=service,
             click_id=gclid,
             conversion_time=conversion_time,
-            conversion_id=f"hubspot-deal-{deal_id}-ql-test",
-            floodlight_id=test_floodlight_id,
-            ql_value=test_value
+            conversion_id=f"hubspot-deal-{deal_id}-ql",
+            floodlight_id=ql_bucket_config["floodlight_id"]
         )
 
         if success:
