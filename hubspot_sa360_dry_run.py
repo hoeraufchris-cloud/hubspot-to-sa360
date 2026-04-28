@@ -153,6 +153,28 @@ def get_first_deals():
                         "value": str(end)
                     }
                 ]
+            },
+            {
+                "filters": [
+                    {
+                        "propertyName": "order_sequence",
+                        "operator": "NOT_HAS_PROPERTY"
+                    },
+                    {
+                        "propertyName": "paid_ad_bid_strategy",
+                        "operator": "HAS_PROPERTY"
+                    },
+                    {
+                        "propertyName": "createdate",
+                        "operator": "GTE",
+                        "value": str(start)
+                    },
+                    {
+                        "propertyName": "createdate",
+                        "operator": "LTE",
+                        "value": str(end)
+                    }
+                ]
             }
         ],
         "properties": [
@@ -264,7 +286,7 @@ def upload_closed_won(service, click_id, conversion_time, conversion_id, revenue
             print(f"\nAlready uploaded (safe to skip): {conversion_id}")
             return True
 
-        print(f"\nClosed Won upload failed for {conversion_id}: {e}")
+        print(f"\nQL upload failed for {conversion_id}: {e}")
         return False
 
 
