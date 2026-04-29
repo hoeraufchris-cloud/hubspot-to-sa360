@@ -26,27 +26,27 @@ CLOSED_WON_FLOODLIGHT_ID = "14543866"
 UPLOAD_LOG_FILE = "uploaded_conversions.json"
 QL_BUCKET_CONFIG = {
     "0-999": {
-        "floodlight_id": "459056676",
+        "floodlight_id": "460685756",
         "value": 0,
     },
     "1000-2999": {
-        "floodlight_id": "453893976",
+        "floodlight_id": "461093029",
         "value": 500,
     },
     "3000-9999": {
-        "floodlight_id": "453834455",
+        "floodlight_id": "461099151",
         "value": 1500,
     },
     "10000-19999": {
-        "floodlight_id": "457317732",
+        "floodlight_id": "460927983",
         "value": 3000,
     },
     "20000-49999": {
-        "floodlight_id": "457699012",
+        "floodlight_id": "461095948",
         "value": 6000,
     },
     "50000+": {
-        "floodlight_id": "453891876",
+        "floodlight_id": "460685762",
         "value": 10000,
     },
 }
@@ -67,15 +67,15 @@ def get_ql_bucket_config(props):
     }
 
     if not raw_bucket:
-        print("No QL bucket found. Defaulting to 0-999.")
-        bucket = "0-999"
-    else:
-        raw_bucket = str(raw_bucket).strip()
-        bucket = bucket_normalization.get(raw_bucket)
+        print("No QL bucket found.")
+        return None, None
 
-        if not bucket:
-            print(f"Unrecognized QL bucket '{raw_bucket}'. Defaulting to 0-999.")
-            bucket = "0-999"
+    raw_bucket = str(raw_bucket).strip()
+    bucket = bucket_normalization.get(raw_bucket)
+
+    if not bucket:
+        print(f"Unrecognized QL bucket '{raw_bucket}'.")
+        return None, None
 
     return bucket, QL_BUCKET_CONFIG[bucket]
 
@@ -230,7 +230,7 @@ def get_contact_for_deal(deal_id):
                 print(f"Skipping deal {deal_id} after repeated HubSpot lookup failures.")
                 return None
 
-def upload_qualified_lead(service, click_id, conversion_time, conversion_id, floodlight_id):
+def upload_qualified_lead(service, click_id, conversion_time, conversion_id, floodlight_id, ql_value):
     body = {
         "conversion": [
             {
@@ -239,7 +239,9 @@ def upload_qualified_lead(service, click_id, conversion_time, conversion_id, flo
                 "conversionTimestamp": conversion_time,
                 "segmentationType": "FLOODLIGHT",
                 "segmentationId": floodlight_id,
-                "type": "ACTION"
+                "type": "TRANSACTION",
+                "revenueMicros": str(int(round(float(ql_value) * 1_000_000))),
+                "currencyCode": "USD"
             }
         ]
     }
@@ -252,6 +254,12 @@ def upload_qualified_lead(service, click_id, conversion_time, conversion_id, flo
         return True
 
     except Exception as e:
+        error_str = str(e)
+
+        if "conversion ID is already specified" in error_str:
+            print(f"\nAlready uploaded (safe to skip): {conversion_id}")
+            return True
+
         print(f"\nQL upload failed for {conversion_id}: {e}")
         return False
 
@@ -324,6 +332,10 @@ def run(service):
 
         ql_bucket, ql_bucket_config = get_ql_bucket_config(props)
 
+        if not ql_bucket_config:
+            print(f"Skipping QL (no bucket): {deal_id}")
+            continue
+
         sa360_row = {
             "clickId": gclid,
             "conversionName": f"Qualified Lead - {ql_bucket}",
@@ -341,7 +353,8 @@ def run(service):
             click_id=gclid,
             conversion_time=conversion_time,
             conversion_id=f"hubspot-deal-{deal_id}-ql",
-            floodlight_id=ql_bucket_config["floodlight_id"]
+            floodlight_id=ql_bucket_config["floodlight_id"],
+            ql_value=ql_bucket_config["value"]
         )
 
         if success:
