@@ -62,8 +62,12 @@ def get_ql_bucket_config(props):
         "1000-2999": "1000-2999",
         "3000-9999": "3000-9999",
         "10000-19999": "10000-19999",
+        "20000-29999": "20000-49999",
         "20000-49999": "20000-49999",
+        "30000-49999": "20000-49999",
         "50000+": "50000+",
+        "over-50000": "50000+",
+        "over_50000": "50000+",
     }
 
     if not raw_bucket:
@@ -74,7 +78,7 @@ def get_ql_bucket_config(props):
     bucket = bucket_normalization.get(raw_bucket)
 
     if not bucket:
-        print(f"Unrecognized QL bucket '{raw_bucket}'.")
+        print(f"Unrecognized QL bucket raw={repr(raw_bucket)}.")
         return None, None
 
     return bucket, QL_BUCKET_CONFIG[bucket]
@@ -111,11 +115,12 @@ def get_first_deals():
     url = f"{BASE_URL}/crm/v3/objects/deals/search"
 
     local_tz = ZoneInfo("America/Chicago")
-    yesterday = datetime.now(local_tz).date() - timedelta(days=1)
+    end_date = datetime.now(local_tz).date() - timedelta(days=1)
+    start_date = end_date - timedelta(days=1)
 
     start = int(
         datetime.combine(
-            yesterday,
+            start_date,
             datetime.min.time(),
             tzinfo=local_tz
         ).timestamp() * 1000
@@ -123,7 +128,7 @@ def get_first_deals():
 
     end = int(
         datetime.combine(
-            yesterday,
+            end_date,
             datetime.max.time(),
             tzinfo=local_tz
         ).timestamp() * 1000
@@ -189,14 +194,40 @@ def get_first_deals():
         "limit": 100
     }
 
-    response = requests.post(url, headers=HEADERS, json=payload)
+    all_results = []
+    after = None
+    page = 1
+    total = None
 
-    print("DEAL SEARCH STATUS:", response.status_code)
-    print("DEAL SEARCH RESPONSE:")
-    print(json.dumps(response.json(), indent=2))
+    while True:
+        if after:
+            payload["after"] = after
+        elif "after" in payload:
+            del payload["after"]
 
-    response.raise_for_status()
-    return response.json().get("results", [])
+        response = requests.post(url, headers=HEADERS, json=payload)
+
+        print(f"DEAL SEARCH PAGE {page} STATUS:", response.status_code)
+        response.raise_for_status()
+
+        data = response.json()
+
+        if total is None:
+            total = data.get("total")
+
+        results = data.get("results", [])
+        all_results.extend(results)
+
+        print(f"Fetched {len(results)} deals on page {page}; running total: {len(all_results)} of {total}")
+
+        after = data.get("paging", {}).get("next", {}).get("after")
+        if not after:
+            break
+
+        page += 1
+
+    print(f"DEAL SEARCH COMPLETE: {len(all_results)} deals fetched out of {total}")
+    return all_results
 
 
 def get_contact_for_deal(deal_id):
