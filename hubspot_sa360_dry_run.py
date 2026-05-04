@@ -27,11 +27,11 @@ UPLOAD_LOG_FILE = "uploaded_conversions.json"
 QL_BUCKET_CONFIG = {
     "0-999": {
         "floodlight_id": "460685756",
-        "value": 0,
+        "value": 1,
     },
     "1000-2999": {
         "floodlight_id": "461093029",
-        "value": 500,
+        "value": 150,
     },
     "3000-9999": {
         "floodlight_id": "461099151",
@@ -111,155 +111,46 @@ def get_sa360_service():
     return service
 
 
-def get_first_deals():
-    url = f"{BASE_URL}/crm/v3/objects/deals/search"
-
-    local_tz = ZoneInfo("America/Chicago")
-    end_date = datetime.now(local_tz).date() - timedelta(days=1)
-    start_date = end_date - timedelta(days=1)
-
-    start = int(
-        datetime.combine(
-            start_date,
-            datetime.min.time(),
-            tzinfo=local_tz
-        ).timestamp() * 1000
-    )
-
-    end = int(
-        datetime.combine(
-            end_date,
-            datetime.max.time(),
-            tzinfo=local_tz
-        ).timestamp() * 1000
-    )
-
-    payload = {
-        "filterGroups": [
-            {
-                "filters": [
-                    {
-                        "propertyName": "order_sequence",
-                        "operator": "LT",
-                        "value": "2"
-                    },
-                    {
-                        "propertyName": "paid_ad_bid_strategy",
-                        "operator": "HAS_PROPERTY"
-                    },
-                    {
-                        "propertyName": "createdate",
-                        "operator": "GTE",
-                        "value": str(start)
-                    },
-                    {
-                        "propertyName": "createdate",
-                        "operator": "LTE",
-                        "value": str(end)
-                    }
-                ]
-            },
-            {
-                "filters": [
-                    {
-                        "propertyName": "order_sequence",
-                        "operator": "NOT_HAS_PROPERTY"
-                    },
-                    {
-                        "propertyName": "paid_ad_bid_strategy",
-                        "operator": "HAS_PROPERTY"
-                    },
-                    {
-                        "propertyName": "createdate",
-                        "operator": "GTE",
-                        "value": str(start)
-                    },
-                    {
-                        "propertyName": "createdate",
-                        "operator": "LTE",
-                        "value": str(end)
-                    }
-                ]
-            }
-        ],
-        "properties": [
-            "createdate",
-            "closedate",
-            "hs_closed_amount",
-            "dealstage",
-            "actual_amount_bucket",
-            "budget_bucket",
-            "paid_ad_bid_strategy"
-        ],
-        "limit": 100
-    }
-
-    all_results = []
-    after = None
-    page = 1
-    total = None
-
-    while True:
-        if after:
-            payload["after"] = after
-        elif "after" in payload:
-            del payload["after"]
-
-        response = requests.post(url, headers=HEADERS, json=payload)
-
-        print(f"DEAL SEARCH PAGE {page} STATUS:", response.status_code)
-        response.raise_for_status()
-
-        data = response.json()
-
-        if total is None:
-            total = data.get("total")
-
-        results = data.get("results", [])
-        all_results.extend(results)
-
-        print(f"Fetched {len(results)} deals on page {page}; running total: {len(all_results)} of {total}")
-
-        after = data.get("paging", {}).get("next", {}).get("after")
-        if not after:
-            break
-
-        page += 1
-
-    print(f"DEAL SEARCH COMPLETE: {len(all_results)} deals fetched out of {total}")
-    return all_results
-
-
 def get_contact_for_deal(deal_id):
-    import time
-
     url = f"{BASE_URL}/crm/v4/objects/deals/{deal_id}/associations/contacts"
 
-    for attempt in range(3):
-        try:
-            response = requests.get(url, headers=HEADERS, timeout=30)
-            response.raise_for_status()
-            results = response.json().get("results", [])
+    response = requests.get(url, headers=HEADERS)
+    response.raise_for_status()
 
-            if not results:
-                return None
+    results = response.json().get("results", [])
 
-            contact_id = results[0]["toObjectId"]
+    if not results:
+        print(f"CONTACT DEBUG | deal_id={deal_id} | associated_contacts=0 | gclid_found=False")
+        return None
 
-            contact_url = f"{BASE_URL}/crm/v3/objects/contacts/{contact_id}?properties=hs_google_click_id,email"
-            contact_res = requests.get(contact_url, headers=HEADERS, timeout=30)
-            contact_res.raise_for_status()
+    print(f"CONTACT DEBUG | deal_id={deal_id} | associated_contacts={len(results)}")
 
-            return contact_res.json()
+    for association in results:
+        contact_id = association["toObjectId"]
 
-        except requests.exceptions.RequestException as e:
-            print(f"HubSpot contact lookup failed for deal {deal_id} on attempt {attempt + 1}: {e}")
+        contact_url = f"{BASE_URL}/crm/v3/objects/contacts/{contact_id}?properties=hs_google_click_id,email"
+        contact_res = requests.get(contact_url, headers=HEADERS)
+        contact_res.raise_for_status()
 
-            if attempt < 2:
-                time.sleep(3)
-            else:
-                print(f"Skipping deal {deal_id} after repeated HubSpot lookup failures.")
-                return None
+        contact = contact_res.json()
+        props = contact.get("properties", {})
+        gclid = props.get("hs_google_click_id")
+        email = props.get("email")
+
+        print(
+            f"CONTACT DEBUG | deal_id={deal_id} | "
+            f"contact_id={contact_id} | email={email} | has_gclid={bool(gclid)}"
+        )
+
+        if gclid:
+            print(
+                f"CONTACT DEBUG | deal_id={deal_id} | "
+                f"selected_contact_id={contact_id} | selected_email={email}"
+            )
+            return contact
+
+    print(f"CONTACT DEBUG | deal_id={deal_id} | gclid_found=False")
+    return None
 
 def upload_qualified_lead(service, click_id, conversion_time, conversion_id, floodlight_id, ql_value):
     body = {
@@ -294,6 +185,205 @@ def upload_qualified_lead(service, click_id, conversion_time, conversion_id, flo
         print(f"\nQL upload failed for {conversion_id}: {e}")
         return False
 
+def update_qualified_lead_value(service, click_id, conversion_time, conversion_id, revenue_dollars):
+    body = {
+        "conversion": [
+            {
+                "clickId": click_id,
+                "conversionId": conversion_id,
+                "conversionTimestamp": conversion_time,
+                "type": "TRANSACTION",
+                "revenueMicros": str(int(float(revenue_dollars) * 1_000_000)),
+                "currencyCode": "USD"
+            }
+        ]
+    }
+
+    try:
+        response = service.conversion().update(body=body).execute()
+
+        print("\nUPDATED QL SA360 RESPONSE:")
+        print(json.dumps(response, indent=2))
+        return True
+
+    except Exception as e:
+        print(f"\nQL update failed for {conversion_id}: {e}")
+        return False
+
+def get_ql_value_from_revenue(revenue):
+    revenue = float(revenue or 0)
+
+    if revenue >= 50000:
+        return 10000
+    elif revenue >= 20000:
+        return 6000
+    elif revenue >= 10000:
+        return 3000
+    elif revenue >= 3000:
+        return 1500
+    elif revenue >= 1000:
+        return 150
+    else:
+        return 1
+
+def get_first_deals():
+    url = f"{BASE_URL}/crm/v3/objects/deals/search"
+
+    yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
+
+    start = int(
+        datetime.combine(
+            yesterday,
+            datetime.min.time()
+        ).timestamp() * 1000
+    )
+
+    end = int(
+        datetime.combine(
+            yesterday,
+            datetime.max.time()
+        ).timestamp() * 1000
+    )
+
+    results = []
+    after = None
+
+    while True:
+        payload = {
+            "filterGroups": [
+                {
+                    "filters": [
+                        {
+                            "propertyName": "createdate",
+                            "operator": "GTE",
+                            "value": str(start)
+                        },
+                        {
+                            "propertyName": "createdate",
+                            "operator": "LTE",
+                            "value": str(end)
+                        }
+                    ]
+                }
+            ],
+            "properties": [
+                "createdate",
+                "closedate",
+                "hs_closed_amount",
+                "dealstage",
+                "order_sequence"
+            ],
+            "limit": 100
+        }
+
+        if after:
+            payload["after"] = after
+
+        response = requests.post(url, headers=HEADERS, json=payload)
+
+        print("DEAL SEARCH STATUS:", response.status_code)
+        response.raise_for_status()
+
+        data = response.json()
+        batch = data.get("results", [])
+
+        for deal in batch:
+            props = deal.get("properties", {})
+            order_seq = props.get("order_sequence")
+
+            if order_seq in (None, ""):
+                results.append(deal)
+                continue
+
+            try:
+                if float(order_seq) < 2:
+                    results.append(deal)
+            except Exception:
+                continue
+
+        print(f"DEALS KEPT SO FAR: {len(results)}")
+
+        paging = data.get("paging", {})
+        next_info = paging.get("next", {})
+        after = next_info.get("after")
+
+        if not after:
+            break
+
+    print(f"TOTAL FIRST DEALS FOUND: {len(results)}")
+    return results
+
+def backfill_qualified_lead_values(service):
+    deals = get_first_deals()
+    upload_log = load_upload_log()
+    uploaded_ql_deal_ids = set(upload_log.get("qualified_leads", []))
+
+    print("\n=== BACKFILL QUALIFIED LEAD VALUES ===\n")
+    print(f"Previously uploaded QL deal IDs in log: {len(uploaded_ql_deal_ids)}")
+
+    for deal in deals:
+        deal_id = deal["id"]
+        props = deal["properties"]
+        order_seq = props.get("order_sequence")
+
+        print(
+            f"FIRST DEAL DEBUG | deal_id={deal_id} | "
+            f"order_sequence={repr(order_seq)} | "
+            f"in_uploaded_ql_log={deal_id in uploaded_ql_deal_ids}"
+        )
+
+        if deal_id not in uploaded_ql_deal_ids:
+            print(f"Skipping QL update - deal was never logged as uploaded: {deal_id}")
+            continue
+
+        contact = get_contact_for_deal(deal_id)
+        if not contact:
+            print(f"Skipping QL update - no contact found for {deal_id}")
+            continue
+
+        contact_props = contact.get("properties", {})
+        gclid = contact_props.get("hs_google_click_id")
+        email = contact_props.get("email")
+
+        print(
+            f"GCLID DEBUG | deal_id={deal_id} | "
+            f"selected_email={email} | has_gclid={bool(gclid)}"
+        )
+
+        if not gclid:
+            print(f"Skipping QL update - no gclid for {deal_id}")
+            continue
+
+        conversion_time_str = props.get("createdate")
+        conversion_dt = datetime.fromisoformat(
+            conversion_time_str.replace("Z", "+00:00")
+        )
+        conversion_time = int(conversion_dt.timestamp() * 1000)
+
+        if conversion_dt < datetime.now(timezone.utc) - timedelta(days=60):
+            print(f"Skipping QL update - conversion older than 60 days: {deal_id}")
+            continue
+
+        revenue = float(props.get("hs_closed_amount") or 0)
+        new_ql_value = get_ql_value_from_revenue(revenue)
+
+        print("QL UPDATE PAYLOAD:")
+        print(json.dumps({
+            "deal_id": deal_id,
+            "clickId": gclid,
+            "conversionTime": conversion_time,
+            "conversionId": f"hubspot-deal-{deal_id}-ql",
+            "new_ql_value": new_ql_value,
+            "source_revenue": revenue
+        }, indent=2))
+
+        update_qualified_lead_value(
+            service=service,
+            click_id=gclid,
+            conversion_time=conversion_time,
+            conversion_id=f"hubspot-deal-{deal_id}-ql",
+            revenue_dollars=new_ql_value
+        )
 
 def upload_closed_won(service, click_id, conversion_time, conversion_id, revenue):
     body = {
@@ -310,24 +400,6 @@ def upload_closed_won(service, click_id, conversion_time, conversion_id, revenue
             }
         ]
     }
-
-    try:
-        response = service.conversion().insert(body=body).execute()
-
-        print("\nCLOSED WON SA360 RESPONSE:")
-        print(json.dumps(response, indent=2))
-        return True
-
-    except Exception as e:
-        error_str = str(e)
-
-        if "conversion ID is already specified" in error_str:
-            print(f"\nAlready uploaded (safe to skip): {conversion_id}")
-            return True
-
-        print(f"\nQL upload failed for {conversion_id}: {e}")
-        return False
-
 
 def run(service):
     deals = get_first_deals()
@@ -448,8 +520,8 @@ def run(service):
 
 if __name__ == "__main__":
     if not HUBSPOT_API_KEY:
-        raise ValueError("HUBSPOT_ACCESS_TOKEN environment variable is not set.")
+        raise ValueError("HUBSPOT_API_KEY environment variable is not set.")
 
     service = get_sa360_service()
     print("SA360 AUTH SUCCESSFUL")
-    run(service)
+    backfill_qualified_lead_values(service)
