@@ -25,30 +25,22 @@ QUALIFIED_LEAD_FLOODLIGHT_ID = "14378257"
 CLOSED_WON_FLOODLIGHT_ID = "14543866"
 UPLOAD_LOG_FILE = "uploaded_conversions.json"
 QL_BUCKET_CONFIG = {
-    "0-999": {
-        "floodlight_id": "460685756",
-        "value": 1,
-    },
-    "1000-2999": {
-        "floodlight_id": "461093029",
-        "value": 150,
-    },
-    "3000-9999": {
-        "floodlight_id": "461099151",
-        "value": 1500,
-    },
-    "10000-19999": {
-        "floodlight_id": "460927983",
-        "value": 3000,
-    },
-    "20000-49999": {
-        "floodlight_id": "461095948",
-        "value": 6000,
-    },
-    "50000+": {
-        "floodlight_id": "460685762",
-        "value": 10000,
-    },
+    "0-999": {"floodlight_id": "460685756", "value": 1},
+    "1000-2999": {"floodlight_id": "461093029", "value": 150},
+    "3000-9999": {"floodlight_id": "461099151", "value": 1500},
+    "10000-19999": {"floodlight_id": "460927983", "value": 3000},
+    "20000-49999": {"floodlight_id": "461095948", "value": 6000},
+    "50000+": {"floodlight_id": "460685762", "value": 10000},
+}
+
+
+ALLOWED_QL_FLOODLIGHT_IDS = {
+    "460685756",
+    "461093029",
+    "461099151",
+    "460927983",
+    "461095948",
+    "460685762",
 }
 
 
@@ -239,6 +231,7 @@ def upload_qualified_lead(service, click_id, conversion_time, conversion_id, flo
 
         print("\nSA360 RESPONSE:")
         print(json.dumps(response, indent=2))
+        audit_ql_response_floodlight(response, conversion_id, floodlight_id)
         return "uploaded"
 
 
@@ -308,6 +301,63 @@ def get_ql_value_from_revenue(revenue):
         return 150
     else:
         return 1
+
+def normalize_segmentation_id(segmentation_id):
+    if segmentation_id is None:
+        return None
+
+
+    segmentation_id = str(segmentation_id)
+
+
+    for allowed_id in ALLOWED_QL_FLOODLIGHT_IDS:
+        if segmentation_id.endswith(allowed_id):
+            return allowed_id
+
+
+    if len(segmentation_id) >= 9:
+        return segmentation_id[-9:]
+
+
+    return segmentation_id
+
+def audit_ql_response_floodlight(response, expected_conversion_id, expected_floodlight_id):
+    conversions = response.get("conversion", [])
+
+
+    if not conversions:
+        print(
+            f"QL AUDIT WARNING | conversion_id={expected_conversion_id} "
+            f"| expected_floodlight_id={expected_floodlight_id} "
+            f"| no conversion objects returned"
+        )
+        return None
+
+
+    conv = conversions[0]
+    segmentation_id_raw = conv.get("segmentationId")
+    segmentation_name = conv.get("segmentationName")
+    segmentation_id_short = normalize_segmentation_id(segmentation_id_raw)
+
+
+    if segmentation_id_short != str(expected_floodlight_id):
+        print(
+            f"QL AUDIT WARNING | conversion_id={expected_conversion_id} "
+            f"| expected_floodlight_id={expected_floodlight_id} "
+            f"| returned_segmentation_id={segmentation_id_raw} "
+            f"| returned_segmentation_id_short={segmentation_id_short} "
+            f"| returned_segmentation_name={segmentation_name}"
+        )
+    else:
+        print(
+            f"QL AUDIT OK | conversion_id={expected_conversion_id} "
+            f"| expected_floodlight_id={expected_floodlight_id} "
+            f"| returned_segmentation_id_short={segmentation_id_short} "
+            f"| returned_segmentation_name={segmentation_name}"
+        )
+
+
+    return segmentation_id_short
 
 def get_first_deals(lookback_days=1):
     url = f"{BASE_URL}/crm/v3/objects/deals/search"
@@ -901,6 +951,11 @@ def backfill_qualified_lead_values(service):
 
             print("\nUPDATED QL SA360 RESPONSE:")
             print(json.dumps(response, indent=2))
+            audit_ql_response_floodlight(
+                response,
+                conversion_id,
+                ql_bucket_config["floodlight_id"]
+            )
             updated_count += 1
 
 
