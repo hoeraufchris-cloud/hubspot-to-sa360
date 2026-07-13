@@ -36,4 +36,4 @@ jobs:
           EOF2
 
       - name: Run SA360 offline conversion upload
-        run: LOOKBACK_DAYS=7 RUN_MODE=daily python hubspot_sa360_dry_run.py
+        run: LOOKBACK_DAYS=1 RUN_MODE=daily python hubspot_sa360_dry_run.py
