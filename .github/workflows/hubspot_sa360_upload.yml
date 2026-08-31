@@ -21,7 +21,6 @@ jobs:
       SWAG_MQL_FLOODLIGHT_ID: '469108996'
       SWAG_MQL_VALUE: '224'
       CLOSED_WON_FLOODLIGHT_ID: '14543866'
-      # Add NEW_CONTACT_FLOODLIGHT_ID / NEW_CONTACT_VALUE here once that Floodlight is confirmed.
 
     steps:
       - name: Check out repo
