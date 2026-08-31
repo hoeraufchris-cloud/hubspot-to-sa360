@@ -3,7 +3,10 @@ name: HubSpot to SA360 Offline Upload
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 05 * * *'
+    - cron: '0 11 * * *'
+
+permissions:
+  contents: write
 
 concurrency:
   group: hubspot-to-sa360-daily
@@ -16,8 +19,8 @@ jobs:
     env:
       HUBSPOT_ACCESS_TOKEN: ${{ secrets.HUBSPOT_ACCESS_TOKEN }}
       GOOGLE_SERVICE_ACCOUNT_FILE: ${{ github.workspace }}/service_account.json
-      LOOKBACK_DAYS: '30'
-      DRY_RUN: 'true'
+      LOOKBACK_DAYS: '1'
+      DRY_RUN: 'false'
       SWAG_MQL_FLOODLIGHT_ID: '469108996'
       SWAG_MQL_VALUE: '224'
       CLOSED_WON_FLOODLIGHT_ID: '14543866'
@@ -42,3 +45,16 @@ jobs:
 
       - name: Run SA360 offline conversion upload
         run: python hubspot_sa360_upload.py
+
+      - name: Commit updated upload log
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add uploaded_conversions.json
+          if git diff --cached --quiet; then
+            echo "No upload log changes to commit"
+          else
+            git commit -m "Update SA360 upload log"
+            git push
+          fi
