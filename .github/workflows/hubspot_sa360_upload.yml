@@ -16,6 +16,12 @@ jobs:
     env:
       HUBSPOT_ACCESS_TOKEN: ${{ secrets.HUBSPOT_ACCESS_TOKEN }}
       GOOGLE_SERVICE_ACCOUNT_FILE: ${{ github.workspace }}/service_account.json
+      LOOKBACK_DAYS: '1'
+      DRY_RUN: 'true'
+      SWAG_MQL_FLOODLIGHT_ID: '469108996'
+      SWAG_MQL_VALUE: '224'
+      CLOSED_WON_FLOODLIGHT_ID: '14543866'
+      # Add NEW_CONTACT_FLOODLIGHT_ID / NEW_CONTACT_VALUE here once that Floodlight is confirmed.
 
     steps:
       - name: Check out repo
@@ -36,4 +42,4 @@ jobs:
           EOF2
 
       - name: Run SA360 offline conversion upload
-        run: LOOKBACK_DAYS=30 RUN_MODE=daily python hubspot_sa360_dry_run.py
+        run: python hubspot_sa360_upload.py
