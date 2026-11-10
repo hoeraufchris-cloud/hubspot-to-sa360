@@ -86,8 +86,12 @@ ALLOWED_QL_FLOODLIGHT_IDS = {
 # HUBSPOT MQL PROPERTY CONFIGURATION
 # =============================================================================
 
+# NOTE: MQL membership is determined by the "date entered MQL" property
+# falling inside the lookback window. We intentionally do NOT filter on the
+# contact's CURRENT lifecycle stage, so contacts who entered MQL in the
+# window but have since advanced (SQL, opportunity, customer) are still
+# captured. The lifecycle stage is only read for logging.
 MQL_LIFECYCLE_PROPERTY = "lifecyclestage"
-MQL_LIFECYCLE_VALUE = "marketingqualifiedlead"
 
 MQL_DATE_PROPERTY = (
     "hs_v2_date_entered_marketingqualifiedlead"
@@ -105,6 +109,16 @@ MQL_ADS_INFLUENCED_VALUES = [
 ]
 
 MQL_GCLID_PROPERTY = "hs_google_click_id"
+
+
+# =============================================================================
+# HUBSPOT CLOSED WON PROPERTY CONFIGURATION
+# =============================================================================
+
+# System-stamped timestamp for when the deal entered the Closed Won stage.
+# Preferred over "closedate", which is user-editable and is a stage-agnostic
+# "expected close date" field.
+CLOSED_WON_DATE_PROPERTY = "hs_v2_date_entered_closedwon"
 
 
 # =============================================================================
@@ -682,6 +696,9 @@ def audit_ql_response_floodlight(
 # =============================================================================
 
 def get_first_deals(lookback_days=1):
+    # Event-based: filters on deal createdate, never on current deal stage,
+    # so first deals created in the window are captured regardless of what
+    # stage they have since moved to (including closed lost).
     start_timestamp, end_timestamp = (
         get_lookback_window_ms(
             lookback_days
@@ -773,6 +790,14 @@ def get_first_deals(lookback_days=1):
 def get_closed_won_deals(
     lookback_days=1,
 ):
+    # Captures deals that ENTERED Closed Won inside the window, even if
+    # they have since left that stage (refund, reopen, etc.).
+    #
+    # Group 1 (primary): hs_v2_date_entered_closedwon in the window.
+    # Group 2 (safety net): previous logic - currently closedwon with
+    #   closedate in the window. Covers any deal that is missing the
+    #   stage-entry timestamp.
+    # Results are unioned and deduplicated by deal ID.
     start_timestamp, end_timestamp = (
         get_lookback_window_ms(
             lookback_days
@@ -780,6 +805,30 @@ def get_closed_won_deals(
     )
 
     filter_groups = [
+        {
+            "filters": [
+                {
+                    "propertyName":
+                        CLOSED_WON_DATE_PROPERTY,
+                    "operator": "GTE",
+                    "value":
+                        str(start_timestamp),
+                },
+                {
+                    "propertyName":
+                        CLOSED_WON_DATE_PROPERTY,
+                    "operator": "LTE",
+                    "value":
+                        str(end_timestamp),
+                },
+                {
+                    "propertyName":
+                        "paid_ad_bid_strategy",
+                    "operator":
+                        "HAS_PROPERTY",
+                },
+            ]
+        },
         {
             "filters": [
                 {
@@ -809,12 +858,13 @@ def get_closed_won_deals(
                         str(end_timestamp),
                 },
             ]
-        }
+        },
     ]
 
     properties = [
         "createdate",
         "closedate",
+        CLOSED_WON_DATE_PROPERTY,
         "hs_closed_amount",
         "amount",
         "dealstage",
@@ -823,12 +873,28 @@ def get_closed_won_deals(
         "budget_bucket",
     ]
 
-    return search_hubspot_objects(
+    results = search_hubspot_objects(
         object_type="deals",
         filter_groups=filter_groups,
         properties=properties,
         search_label="CLOSED WON SEARCH",
     )
+
+    deals_by_id = {
+        deal["id"]: deal
+        for deal in results
+    }
+
+    unique_deals = list(
+        deals_by_id.values()
+    )
+
+    print(
+        "CLOSED WON DEDUPLICATION COMPLETE: "
+        f"{len(unique_deals)} unique deals"
+    )
+
+    return unique_deals
 
 
 # =============================================================================
@@ -836,6 +902,9 @@ def get_closed_won_deals(
 # =============================================================================
 
 def get_mql_contacts(lookback_days=1):
+    # Event-based: a contact is an MQL for this window if it ENTERED the
+    # MQL stage during the window. We deliberately do not require the
+    # contact's current lifecycle stage to still be MQL.
     start_timestamp, end_timestamp = (
         get_lookback_window_ms(
             lookback_days
@@ -843,13 +912,6 @@ def get_mql_contacts(lookback_days=1):
     )
 
     common_filters = [
-        {
-            "propertyName":
-                MQL_LIFECYCLE_PROPERTY,
-            "operator": "EQ",
-            "value":
-                MQL_LIFECYCLE_VALUE,
-        },
         {
             "propertyName":
                 MQL_DATE_PROPERTY,
@@ -1562,9 +1624,14 @@ def process_closed_won(
             counts["no_gclid"] += 1
             continue
 
+        # Prefer the system-stamped stage-entry date; fall back to
+        # closedate if it is missing.
         conversion_time = (
             parse_hubspot_datetime_to_ms(
                 properties.get(
+                    CLOSED_WON_DATE_PROPERTY
+                )
+                or properties.get(
                     "closedate"
                 )
             )
@@ -1573,7 +1640,7 @@ def process_closed_won(
         if conversion_time is None:
             print(
                 "Skipping Closed Won "
-                f"(no closedate): {deal_id}"
+                f"(no closed won date): {deal_id}"
             )
 
             counts["no_closedate"] += 1
@@ -1594,6 +1661,14 @@ def process_closed_won(
         payload_preview = {
             "deal_id": deal_id,
             "clickId": gclid,
+            "currentDealStage":
+                properties.get("dealstage"),
+            "dateEnteredClosedWon":
+                properties.get(
+                    CLOSED_WON_DATE_PROPERTY
+                ),
+            "closedate":
+                properties.get("closedate"),
             "conversionTime":
                 conversion_time,
             "revenue": revenue,
@@ -1745,7 +1820,7 @@ def process_swag_mqls(
         payload_preview = {
             "contact_id": contact_id,
             "clickId": gclid,
-            "lifecycleStage":
+            "currentLifecycleStage":
                 properties.get(
                     MQL_LIFECYCLE_PROPERTY
                 ),
@@ -1892,7 +1967,7 @@ def print_closed_won_summary(counts):
         f"{counts['no_gclid']}"
     )
     print(
-        f"Skipped - no closedate: "
+        f"Skipped - no closed won date: "
         f"{counts['no_closedate']}"
     )
     print(
@@ -2280,6 +2355,46 @@ def catchup_insert_missing_qualified_leads(
     print_ql_summary(counts)
 
 
+def catchup_insert_missing_closed_won(
+    service,
+):
+    lookback_days = int(
+        os.getenv(
+            "LOOKBACK_DAYS",
+            "60",
+        )
+    )
+
+    print(
+        "RUN_MODE=cw_catchup_insert"
+    )
+
+    print(
+        "CATCHING UP MISSING CLOSED WON "
+        f"INSERTS WITH LOOKBACK_DAYS="
+        f"{lookback_days}"
+    )
+
+    upload_log = load_upload_log()
+
+    deals = get_closed_won_deals(
+        lookback_days=lookback_days
+    )
+
+    counts = process_closed_won(
+        service=service,
+        deals=deals,
+        upload_log=upload_log,
+    )
+
+    print(
+        "\n=== CLOSED WON CATCHUP "
+        "INSERT SUMMARY ==="
+    )
+
+    print_closed_won_summary(counts)
+
+
 def catchup_insert_missing_swag_mqls(
     service,
 ):
@@ -2348,6 +2463,11 @@ if __name__ == "__main__":
             service
         )
 
+    elif run_mode == "cw_catchup_insert":
+        catchup_insert_missing_closed_won(
+            service
+        )
+
     elif run_mode == "mql_catchup_insert":
         catchup_insert_missing_swag_mqls(
             service
@@ -2358,6 +2478,7 @@ if __name__ == "__main__":
             f"Unsupported RUN_MODE="
             f"{run_mode}. Use daily, "
             "ql_backfill, "
-            "ql_catchup_insert, or "
+            "ql_catchup_insert, "
+            "cw_catchup_insert, or "
             "mql_catchup_insert."
         )
