@@ -2,6 +2,20 @@ name: HubSpot to SA360 Offline Upload
 
 on:
   workflow_dispatch:
+    inputs:
+      run_mode:
+        description: "What to run"
+        type: choice
+        default: daily
+        options:
+          - daily
+          - mql_catchup_insert
+          - cw_catchup_insert
+          - ql_catchup_insert
+      lookback_days:
+        description: "Days to look back"
+        type: string
+        default: "1"
   schedule:
     - cron: '0 11 * * *'
 
@@ -19,7 +33,8 @@ jobs:
     env:
       HUBSPOT_ACCESS_TOKEN: ${{ secrets.HUBSPOT_ACCESS_TOKEN }}
       GOOGLE_SERVICE_ACCOUNT_FILE: ${{ github.workspace }}/service_account.json
-      LOOKBACK_DAYS: '1'
+      RUN_MODE: ${{ inputs.run_mode || 'daily' }}
+      LOOKBACK_DAYS: ${{ inputs.lookback_days || '1' }}
       DRY_RUN: 'false'
       SWAG_MQL_FLOODLIGHT_ID: '469108996'
       SWAG_MQL_VALUE: '224'
